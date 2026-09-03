@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+set -e
+
+# env
+CONFIG_FILE=.lunabuild
+ENV_FILE=.env
+DEFAULT_PORT=8000
+VERSION=1.0
+
+# Build command is fixed, not user-configurable.
+readonly BUILD_CMD="xtool dev build --ipa"
+
+usage() {
+  echo "Usage: $0 <command> [args]"
+  echo ""
+  echo "Project commands:"
+  echo "  init                    - create a .lunabuild config in this directory"
+  echo "  config show             - print current config"
+  echo "  config ipa <path>       - set the .ipa path"
+  echo "  config device <ip>      - set the device IP"
+  echo "  config url <url-scheme> - set the app url scheme"
+  echo "  config port <port>      - set the http server port (default: $DEFAULT_PORT)"
+  echo ""
+  echo "SSH auth (optional):"
+  echo "  Put LUNA_SSH_PASS=yourpassword in a .env file to use password auth via"
+  echo "  sshpass instead of key/agent-based ssh."
+  echo ""
+  echo "Build/deploy commands:"
+  echo "  build                   - run 'xtool dev build --ipa'"
+  echo "  install                 - serve the .ipa and trigger TrollStore install"
+  echo "  dev                     - build, install then trigger url-scheme to open app"
+  exit 1
+}
+
+# CONFIG
+# .lunabuild is a plain key=value file:
+#   IPA_PATH=./yourapp.ipa
+#   DEVICE_IP=192.168.1.50
+#   URL_SCHEME=myapp
+#   PORT=8000
+
+load_config() {
+  if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+  fi
+  IPA="${IPA_PATH}"
+  DEVICE_IP="${DEVICE_IP}"
+  URL_SCHEME="${URL_SCHEME}"
+  PORT="${PORT:-$DEFAULT_PORT}"
+}
+
+# .env is a plain key=value file, all vars prefixed LUNA_:
+#   LUNA_SSH_PASS=yourpassword
+load_env() {
+  if [ -f "$ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+  fi
+  SSH_PASS="${LUNA_SSH_PASS}"
+}
+
+# ---- Checks: complain loudly instead of silently falling back ----
+
+check_ipa_set() {
+  if [ -z "$IPA" ]; then
+    echo "ERROR: no IPA path configured. Run '$0 config ipa <path>'." >&2
+    exit 1
+  fi
+}
+
+check_device_set() {
+  if [ -z "$DEVICE_IP" ]; then
+    echo "ERROR: no device IP configured. Run '$0 config device <ip>'." >&2
+    exit 1
+  fi
+}
+
+check_xtool_installed() {
+  if ! command -v xtool >/dev/null 2>&1; then
+    echo "ERROR: xtool is not installed or not in PATH." >&2
+    echo "        Install it first: https://github.com/xtool-org/xtool" >&2
+    exit 1
+  fi
+}
+
+# Runs an ssh command against the device, using sshpass if LUNA_SSH_PASS
+# is set in .env, otherwise falling back to normal ssh (key/agent auth).
+ssh_cmd() {
+  if [ -n "$SSH_PASS" ]; then
+    if ! command -v sshpass >/dev/null 2>&1; then
+      echo "ERROR: LUNA_SSH_PASS is set in $ENV_FILE but 'sshpass' is not installed." >&2
+      echo "        Install it (e.g. 'sudo pacman -S sshpass') or remove LUNA_SSH_PASS to use key-based auth." >&2
+      exit 1
+    fi
+    sshpass -p "$SSH_PASS" ssh mobile@"$DEVICE_IP" "$1"
+  else
+    ssh mobile@"$DEVICE_IP" "$1"
+  fi
+}
+
+save_config() {
+  cat >"$CONFIG_FILE" <<EOF
+IPA_PATH=${IPA}
+DEVICE_IP=${DEVICE_IP}
+URL_SCHEME=${URL_SCHEME}
+PORT=${PORT}
+EOF
+  echo "Wrote $CONFIG_FILE"
+}
+
+cmd_init() {
+  if [ -f "$CONFIG_FILE" ]; then
+    echo "$CONFIG_FILE already exists in this directory. Not overwriting."
+    cat "$CONFIG_FILE"
+    exit 0
+  fi
+  load_config # IPA/DEVICE_IP/URL_SCHEME empty, PORT gets the default
+  save_config
+  echo "Now set it up with:"
+  echo "  $0 config ipa <path>"
+  echo "  $0 config device <ip>"
+  echo "  $0 config url <url-scheme>   (optional)"
+  echo "  $0 config port <port>        (optional, default $DEFAULT_PORT)"
+}
+
+cmd_config() {
+  load_config
+  case "$1" in
+  show)
+    if [ ! -f "$CONFIG_FILE" ]; then
+      echo "No $CONFIG_FILE in this directory yet. Run '$0 init' first."
+      exit 1
+    fi
+    cat "$CONFIG_FILE"
+    ;;
+  ipa)
+    [ -z "$2" ] && {
+      echo "Usage: $0 config ipa <path>"
+      exit 1
+    }
+    IPA="$2"
+    save_config
+    ;;
+  device)
+    [ -z "$2" ] && {
+      echo "Usage: $0 config device <ip>"
+      exit 1
+    }
+    DEVICE_IP="$2"
+    save_config
+    ;;
+  url)
+    [ -z "$2" ] && {
+      echo "Usage: $0 config url <url-scheme>"
+      exit 1
+    }
+    URL_SCHEME="$2"
+    save_config
+    ;;
+  port)
+    [ -z "$2" ] && {
+      echo "Usage: $0 config port <port>"
+      exit 1
+    }
+    PORT="$2"
+    save_config
+    ;;
+  *)
+    usage
+    ;;
+  esac
+}
+
+do_build() {
+  load_config
+  check_xtool_installed
+  echo "Building..."
+  eval "$BUILD_CMD"
+}
+
+do_install() {
+  load_config
+  load_env
+  check_ipa_set
+  check_device_set
+
+  if [ ! -f "$IPA" ]; then
+    echo "ERROR: $IPA not found. Run '$0 build' first, or fix the path with '$0 config ipa <path>'." >&2
+    exit 1
+  fi
+
+  echo "Serving $IPA on port $PORT..."
+  python3 -m http.server "$PORT" --directory "$(dirname "$IPA")" &
+  SERVER_PID=$!
+  sleep 1
+
+  LOCAL_IP=$(ip route get 1 | awk '{print $7; exit}')
+  IPA_URL="http://${LOCAL_IP}:${PORT}/$(basename "$IPA")"
+
+  echo "Triggering install on device ($DEVICE_IP)..."
+  ssh_cmd "uiopen 'apple-magnifier://install?url=${IPA_URL}'"
+
+  echo "Waiting for device to fetch and install..."
+  sleep 5
+
+  if [ -n "$URL_SCHEME" ]; then
+    echo "Open app on device ($DEVICE_IP)..."
+    ssh_cmd "uiopen '${URL_SCHEME}://open'"
+  fi
+
+  kill "$SERVER_PID"
+  echo "Done."
+}
+
+do_version() {
+  echo "$VERSION"
+}
+
+case "$1" in
+init)
+  cmd_init
+  ;;
+config)
+  shift
+  cmd_config "$@"
+  ;;
+build)
+  do_build
+  ;;
+install)
+  do_install
+  ;;
+dev)
+  do_build
+  do_install
+  ;;
+version)
+  do_version
+  ;;
+*)
+  usage
+  ;;
+esac
