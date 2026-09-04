@@ -9,6 +9,14 @@ Sideloading an app with a free Apple Developer ID will stops the app from launch
 
 `luna` automates that workflow: build the `.ipa` with xtool, serve it over the local network, and tell TrollStore (over SSH) to fetch and install it then launching the app afterward.
 
+## TrollStore settings
+ 
+For `luna install`/`luna dev` to work without you tapping through prompts on the device, open **TrollStore → Settings** and set:
+ 
+- **URL Scheme Enabled** → On (this is what lets `luna` trigger installs via the `apple-magnifier://install?url=...` scheme over SSH)
+- **Show Install Confirm Alert** → **Never**
+> ⚠️ **Warning:** Setting the install confirm alert to "Never" means *any* app or script that can trigger TrollStore's URL scheme can silently install an `.ipa` on your device with no prompt. This is convenient for automation but removes a safety check, only enable it if you understand the tradeoff, and keep your device off untrusted networks while it's set this way.
+
 ## Requirements
 
 - **Host machine**: [xtool](https://github.com/xtool-org/xtool) installed and in `PATH`
