@@ -25,6 +25,7 @@ For `luna install`/`luna dev` to work without you tapping through prompts on the
   - An SSH server installed and running, reachable from the host over the network. If your device isn't jailbroken yet, jailbreak it first (e.g. with [Dopamine](https://ellekit.space/dopamine/)), then install OpenSSH through your package manager of choice (Sileo, Zebra, etc.) and make sure the service is enabled/started
 - Host and device on the same network (luna's HTTP server serves the `.ipa` to the device)
 - `python3` (used for the temporary HTTP server on the host)
+- Global app scheme to trigger open app once installed
 - Optional: [`sshpass`](https://linux.die.net/man/1/sshpass) if you want to use password-based SSH auth instead of keys/agent
 
 ## Installation
